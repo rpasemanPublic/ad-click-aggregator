@@ -36,6 +36,18 @@ services:
     depends_on:
       - postgres
 
+  seed:
+    image: postgres:16-alpine
+    container_name: seed
+    command: psql -h postgres -U postgres -d ad_click_aggregator -f /seed.sql
+    environment:
+      PGPASSWORD: postgres
+    volumes:
+      - ./db/seed.sql:/seed.sql
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+
   record-click-service:
     build: ./record-click-service
     container_name: record-click-service
