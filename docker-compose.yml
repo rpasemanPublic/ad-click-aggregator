@@ -27,6 +27,15 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
+  flyway:
+    image: flyway/flyway:12.11.0
+    container_name: flyway
+    command: -url=jdbc:postgresql://postgres:5432/ad_click_aggregator -user=postgres -password=postgres -connectRetries=10 migrate
+    volumes:
+      - ./db/migrations:/flyway/sql
+    depends_on:
+      - postgres
+
   record-click-service:
     build: ./record-click-service
     container_name: record-click-service
@@ -43,8 +52,14 @@ services:
     container_name: kafka-streams-app
     environment:
       KAFKA_BROKER: kafka:9092
+      DB_URL: jdbc:postgresql://postgres:5432/ad_click_aggregator
+      DB_USER: postgres
+      DB_PASSWORD: postgres
     depends_on:
-      - kafka
+      kafka:
+        condition: service_started
+      flyway:
+        condition: service_completed_successfully
 
   analytics-service:
     build: ./analytics-service
@@ -55,7 +70,8 @@ services:
       PORT: 3002
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/ad_click_aggregator
     depends_on:
-      - postgres
+      flyway:
+        condition: service_completed_successfully
 
   ad-click-simulator:
     build: ./ad-click-simulator

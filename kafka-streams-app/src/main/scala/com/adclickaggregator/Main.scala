@@ -23,8 +23,10 @@ object Main {
       kafkaBrokerEndpoint,
     )
 
-    val topology = TopologyBuilder.build()
-    val streams  = new KafkaStreams(topology, streamProps)
+    val topology = TopologyBuilder()
+      .withClickCountWriter(new PostgresClickCountWriter(Database.dataSource))
+      .build()
+    val streams = new KafkaStreams(topology, streamProps)
     streams.start()
     sys.addShutdownHook {
       streams.close()
