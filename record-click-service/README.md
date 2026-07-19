@@ -47,7 +47,13 @@ docker compose up --build kafka postgres flyway seed kafka-streams-app record-cl
 
 Then, for example:
 
+```bash
+curl -s -i -X POST http://localhost:3001/recordClick -H "Content-Type: application/json" -d '{"adId":"ad-001"}'
+```
+
 ```powershell
+# Windows PowerShell — `curl` is aliased to Invoke-WebRequest there, which doesn't
+# understand curl's flags, so use this instead:
 Invoke-RestMethod -Uri "http://localhost:3001/recordClick" -Method Post -ContentType "application/json" -Body '{"adId":"ad-001"}'
 ```
 
