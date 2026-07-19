@@ -56,8 +56,12 @@ services:
     environment:
       PORT: 3001
       KAFKA_BROKER: kafka:9092
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/ad_click_aggregator
     depends_on:
-      - kafka
+      kafka:
+        condition: service_started
+      seed:
+        condition: service_completed_successfully
 
   kafka-streams-app:
     build: ./kafka-streams-app
