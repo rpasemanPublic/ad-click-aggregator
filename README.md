@@ -60,12 +60,20 @@ docker compose up --build
 | Kafka                  | localhost:9092          |
 | Postgres               | localhost:5432          |
 
+## Database
+
+Schema migrations live in `db/migrations` (Flyway), applied automatically by the
+`flyway` service before any dependent service starts. Local-dev sample data
+(`db/seed.sql` — a handful of sample ads) is kept separate from the versioned
+migrations and applied by the `seed` service, since seed data isn't schema and
+shouldn't run against a real deployment the same way migrations would.
+
 ## Status
 
-- `kafka-streams-app` — bootstrap shell working end-to-end: config, auto-creates the
-  `ad-clicks` topic on startup, and reads it into a `KStream[String, ClickEvent]` with
-  working JSON Serdes. The windowed aggregation itself (count clicks per ad per minute)
-  and the Postgres sink are not yet built. See
+- **`record-click-service` and `kafka-streams-app` are fully working, verified
+  end-to-end.** A real `POST /recordClick` looks up the ad, produces a click event to
+  Kafka, gets aggregated into 1-minute windows, and lands in Postgres. See
+  [`record-click-service/README.md`](record-click-service/README.md) and
   [`kafka-streams-app/README.md`](kafka-streams-app/README.md) for details.
-- `record-click-service`, `analytics-service`, `ad-click-simulator`, `analytics-dashboard`
-  — scaffold only, no business logic yet.
+- `analytics-service`, `ad-click-simulator`, `analytics-dashboard` — scaffold only, no
+  business logic yet.
