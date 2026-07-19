@@ -62,5 +62,10 @@ docker compose up --build
 
 ## Status
 
-Scaffold only — service business logic, the Kafka topic/event schema, and the Streams
-topology are still being designed.
+- `kafka-streams-app` — bootstrap shell working end-to-end: config, auto-creates the
+  `ad-clicks` topic on startup, and reads it into a `KStream[String, ClickEvent]` with
+  working JSON Serdes. The windowed aggregation itself (count clicks per ad per minute)
+  and the Postgres sink are not yet built. See
+  [`kafka-streams-app/README.md`](kafka-streams-app/README.md) for details.
+- `record-click-service`, `analytics-service`, `ad-click-simulator`, `analytics-dashboard`
+  — scaffold only, no business logic yet.
