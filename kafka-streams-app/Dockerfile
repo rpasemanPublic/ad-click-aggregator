@@ -1,4 +1,4 @@
-FROM sbtscala/scala-sbt:eclipse-temurin-17.0.9_9_1.10.7_2.13.15
+FROM sbtscala/scala-sbt:eclipse-temurin-alpine-17.0.19_10_1.12.14_2.13.18
 WORKDIR /app
 COPY . .
 CMD ["sbt", "run"]
