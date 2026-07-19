@@ -37,13 +37,13 @@ analytics-dashboard (React)
 
 ## Services
 
-| Service                 | Language        | Purpose                                         |
-|--------------------------|-----------------|--------------------------------------------------|
-| `record-click-service`   | Node / TS       | Records clicks, produces to Kafka, returns destination URL |
-| `kafka-streams-app`      | Scala           | Consumes click events, aggregates per-minute counts per ad |
-| `analytics-service`      | Node / TS       | Serves aggregated click metrics to advertisers  |
-| `ad-click-simulator`     | React / Vite    | Simulates a page with clickable ads             |
-| `analytics-dashboard`    | React / Vite    | Displays click metrics over time                |
+| Service                | Language     | Purpose                                                    |
+| ---------------------- | ------------ | ---------------------------------------------------------- |
+| `record-click-service` | Node / TS    | Records clicks, produces to Kafka, returns destination URL |
+| `kafka-streams-app`    | Scala        | Consumes click events, aggregates per-minute counts per ad |
+| `analytics-service`    | Node / TS    | Serves aggregated click metrics to advertisers             |
+| `ad-click-simulator`   | React / Vite | Simulates a page with clickable ads                        |
+| `analytics-dashboard`  | React / Vite | Displays click metrics over time                           |
 
 ## Running locally
 
@@ -51,14 +51,59 @@ analytics-dashboard (React)
 docker compose up --build
 ```
 
-| Service               | URL                     |
-|------------------------|--------------------------|
-| record-click-service   | http://localhost:3001   |
-| analytics-service      | http://localhost:3002   |
-| ad-click-simulator     | http://localhost:5173   |
-| analytics-dashboard    | http://localhost:5174   |
-| Kafka                  | localhost:9092          |
-| Postgres               | localhost:5432          |
+| Service              | URL                   |
+| -------------------- | --------------------- |
+| record-click-service | http://localhost:3001 |
+| analytics-service    | http://localhost:3002 |
+| ad-click-simulator   | http://localhost:5173 |
+| analytics-dashboard  | http://localhost:5174 |
+| Kafka                | localhost:9092        |
+| Postgres             | localhost:5432        |
+
+## Testing locally
+
+Record a click:
+
+```bash
+curl -s -i -X POST http://localhost:3001/recordClick -H "Content-Type: application/json" -d '{"adId":"ad-001"}'
+```
+
+```powershell
+# Windows PowerShell — `curl` is aliased to Invoke-WebRequest there, which doesn't
+# understand curl's flags, so use this instead:
+Invoke-RestMethod -Uri "http://localhost:3001/recordClick" -Method Post -ContentType "application/json" -Body '{"adId":"ad-001"}'
+```
+
+Sample `adId`s available from `db/seed.sql`: `ad-001` through `ad-005`.
+
+Tail logs:
+
+```
+docker logs -f --tail 50 record-click-service
+docker logs -f --tail 50 kafka
+docker logs -f --tail 50 kafka-streams-app
+```
+
+Watch messages actually land on the `ad-clicks` topic:
+
+```
+docker exec -it kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic ad-clicks --from-beginning
+```
+
+Check what's landed in Postgres:
+
+```
+docker exec -it postgres psql -U postgres -d ad_click_aggregator
+```
+
+Then, at the `psql` prompt:
+
+```sql
+\dt                                      -- list tables
+SELECT * FROM ads;                       -- seeded ad metadata
+SELECT * FROM ad_click_counts_minute;    -- aggregated click counts
+\q                                        -- exit
+```
 
 ## Database
 
