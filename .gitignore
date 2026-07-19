@@ -1,0 +1,25 @@
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+
+# Scala / sbt
+target/
+project/target/
+project/project/
+.bloop/
+.bsp/
+.metals/
+metals.sbt
+
+# Env
+.env
+.env.*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
