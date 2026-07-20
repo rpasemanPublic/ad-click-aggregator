@@ -6,6 +6,18 @@ export const pool = new Pool({
     "postgres://postgres:postgres@localhost:5432/ad_click_aggregator",
 });
 
+interface Ad {
+  ad_id: string;
+  destination_url: string;
+}
+
+export async function getAds(): Promise<Ad[]> {
+  const result = await pool.query<Ad>(
+    "SELECT ad_id, destination_url FROM ads ORDER BY ad_id",
+  );
+  return result.rows;
+}
+
 interface AdSeries {
   ad_id: string;
   data: { bucket: string; clicks: number }[];

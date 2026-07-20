@@ -1,9 +1,12 @@
+import cors from "cors";
 import express from "express";
-import { getClickCounts } from "./db.js";
+import { getAds, getClickCounts } from "./db.js";
 
 import type { Request, Response } from "express";
 
 const app = express();
+
+app.use(cors());
 
 interface AnalyticsQuery {
   adIds: string;
@@ -19,6 +22,10 @@ interface AnalyticsResponse {
 
 interface ErrorResponse {
   error: string;
+}
+
+interface AdsResponse {
+  ads: { adId: string; destinationUrl: string }[];
 }
 
 const PORT = process.env.PORT ?? 3002;
@@ -57,6 +64,17 @@ app.get(
     });
   },
 );
+
+app.get("/ads", async (_req: Request, res: Response<AdsResponse>) => {
+  const ads = await getAds();
+  res.set("Cache-Control", "no-store");
+  res.json({
+    ads: ads.map((ad) => ({
+      adId: ad.ad_id,
+      destinationUrl: ad.destination_url,
+    })),
+  });
+});
 
 app.listen(PORT, () => {
   console.log(`analytics-service listening on port ${PORT}`);
