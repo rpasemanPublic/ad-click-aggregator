@@ -1,8 +1,10 @@
 package com.adclickaggregator
 
 import org.apache.kafka.common.serialization.Serdes
+import org.apache.kafka.common.utils.Bytes
 import org.apache.kafka.streams.{StreamsBuilder, Topology}
-import org.apache.kafka.streams.kstream.{Consumed, KStream, TimeWindows}
+import org.apache.kafka.streams.kstream.{Consumed, KStream, Materialized, TimeWindows}
+import org.apache.kafka.streams.state.WindowStore
 import org.slf4j.LoggerFactory
 
 import java.time.Duration
@@ -31,14 +33,30 @@ final case class TopologyBuilder private (clickCountWriter: Option[ClickCountWri
       }
       .filter { (key, event) => key == event.adId }
 
-    val counts = clicks.groupByKey
+    val clickCountAggregates = clicks.groupByKey
       .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(1)))
-      .count()
+      .aggregate(
+        () => ClickCountAggregate(count = 0, maxTimestamp = 0),
+        (_, event: ClickEvent, agg: ClickCountAggregate) =>
+          ClickCountAggregate(
+            count = agg.count + 1,
+            maxTimestamp = math.max(agg.maxTimestamp, event.timestamp),
+          ),
+        Materialized.`with`[String, ClickCountAggregate, WindowStore[Bytes, Array[Byte]]](
+          Serdes.String(),
+          ClickCountAggregate.serde,
+        ),
+      )
 
-    counts.toStream().foreach { (windowedKey, count) =>
+    clickCountAggregates.toStream().foreach { (windowedKey, clickAgg) =>
       val adId        = windowedKey.key()
       val windowStart = windowedKey.window().start() // epoch millis
-      writer.write(adId = adId, windowStart = windowStart, count = count)
+      writer.write(
+        adId = adId,
+        windowStart = windowStart,
+        count = clickAgg.count,
+        maxTimestamp = clickAgg.maxTimestamp,
+      )
     }
 
     builder.build()

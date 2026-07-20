@@ -1,0 +1,20 @@
+{
+  "name": "load-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "stress-test": "tsx stress-test.ts"
+  },
+  "dependencies": {
+    "autocannon": "^8.0.0",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/autocannon": "^7.12.7",
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

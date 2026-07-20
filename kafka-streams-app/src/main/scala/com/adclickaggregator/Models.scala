@@ -13,9 +13,15 @@ case class ClickEvent(
     userAgent: String,
     referrerUrl: Option[String],
 )
-
 object ClickEvent {
   implicit val decoder: Decoder[ClickEvent]       = deriveDecoder[ClickEvent]
   implicit val encoder: Encoder[ClickEvent]       = deriveEncoder[ClickEvent]
   implicit val clickEventSerde: Serde[ClickEvent] = JsonSerde[ClickEvent]
+}
+
+case class ClickCountAggregate(count: Long, maxTimestamp: Long)
+object ClickCountAggregate {
+  implicit val decoder: Decoder[ClickCountAggregate] = deriveDecoder[ClickCountAggregate]
+  implicit val encoder: Encoder[ClickCountAggregate] = deriveEncoder[ClickCountAggregate]
+  implicit val serde: Serde[ClickCountAggregate]     = JsonSerde[ClickCountAggregate]
 }

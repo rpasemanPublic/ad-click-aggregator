@@ -22,6 +22,7 @@ object Main {
       StreamsConfig.BOOTSTRAP_SERVERS_CONFIG,
       kafkaBrokerEndpoint,
     )
+    streamProps.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, "2000")
 
     val topology = TopologyBuilder()
       .withClickCountWriter(new PostgresClickCountWriter(Database.dataSource))
