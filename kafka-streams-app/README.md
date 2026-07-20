@@ -19,33 +19,53 @@ per-minute click counts per ad.
 
 ## Layout
 
-- `Main.scala` — app entry point: loads config, auto-creates the `ad-clicks` topic if it
-  doesn't already exist, builds and starts the `KafkaStreams` instance, and registers a
-  shutdown hook for a clean `.close()`.
-- `Models.scala` — the `ClickEvent` case class, its circe `Encoder`/`Decoder`, and its
-  Kafka `Serde`.
+- `Main.scala` — app entry point: loads config (including `commit.interval.ms=2000`,
+  lowered from the 30s default so aggregated counts reach Postgres quickly — see
+  "Latency" below), auto-creates the `ad-clicks` topic if it doesn't already exist,
+  builds and starts the `KafkaStreams` instance, and registers a shutdown hook for a
+  clean `.close()`.
+- `Models.scala` — `ClickEvent` (the raw click) and `ClickCountAggregate` (the running
+  `count` + `maxTimestamp` per window), their circe `Encoder`/`Decoder`s, and their
+  Kafka `Serde`s.
 - `JsonSerde.scala` — a generic `Serde[T]` builder on top of circe, reusable for any
   circe-encodable type.
 - `TopologyBuilder.scala` — builds the Kafka Streams `Topology`: reads `ad-clicks`,
   validates that the Kafka record key matches `ClickEvent.adId` (logs and drops
   mismatches — no dead-letter topic yet), aggregates into 1-minute tumbling windows via
-  `groupByKey`/`windowedBy`/`count`, and writes each result out via an injected
-  `ClickCountWriter`. Structured as an immutable builder (`case class` + `copy`, private
-  constructor, companion `apply()`) rather than a plain object, since more configuration
-  is expected here later.
+  `groupByKey`/`windowedBy`/`aggregate` (tracking count *and* max click timestamp, not
+  just a count), and writes each result out via an injected `ClickCountWriter`.
+  Structured as an immutable builder (`case class` + `copy`, private constructor,
+  companion `apply()`) rather than a plain object, since more configuration is expected
+  here later.
 - `ClickCountWriter.scala` — the `ClickCountWriter` trait (dependency-injected into
   `TopologyBuilder` so the topology can be unit tested later with a fake writer instead
   of a real database) and `PostgresClickCountWriter`, which upserts into
-  `ad_click_counts_minute` using `scala.util.Using.Manager` for resource cleanup.
+  `ad_click_counts_minute` using `scala.util.Using.Manager` for resource cleanup, and
+  logs observed staleness (`now - maxTimestamp`) on every successful write.
 - `Database.scala` — a HikariCP connection pool singleton (`object` — Scala's built-in
   singleton, no manual pattern needed).
+
+## Latency
+
+A hellointerview follow-up question for this problem asks for clicks to be reflected in
+aggregated results within 5 seconds. Kafka Streams batches `KTable` updates internally
+(the "record cache") and only flushes to `.foreach()` — and therefore to Postgres —
+whichever comes first: the cache fills up, or `commit.interval.ms` elapses (30s by
+default, which would blow well past 5s). `commit.interval.ms` is set to 2000 here to
+bound the worst case comfortably under the target.
+
+This isn't just a config-level assumption — `PostgresClickCountWriter` logs real
+observed staleness on every write (see `load-test/README.md` for how this was verified
+under load: staleness stayed in single/low-double-digit milliseconds, with one outlier
+around 1.6s, still well under target).
 
 ## Status
 
 Fully working, verified end-to-end against the whole stack (Kafka, Postgres via Flyway
-migrations, and `record-click-service` as the producer). Not yet built: dead-letter
-handling for key/value mismatches, hour/day rollups, and hot-key salting — all
-deliberately deferred until they're actually needed.
+migrations, and `record-click-service` as the producer), including under load. Not yet
+built: dead-letter handling for key/value mismatches, hour/day rollups, hot-key salting,
+and `clickId`-based cross-service tracing — all deliberately deferred until actually
+needed.
 
 ## Running locally
 

@@ -90,6 +90,13 @@ Watch messages actually land on the `ad-clicks` topic:
 docker exec -it kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic ad-clicks --from-beginning
 ```
 
+Check click-to-Postgres latency (`kafka-streams-app` logs this on every write — see
+[`kafka-streams-app/README.md`](kafka-streams-app/README.md#latency)):
+
+```
+docker logs kafka-streams-app --since 5m | grep staleness
+```
+
 Check what's landed in Postgres:
 
 ```
@@ -105,6 +112,12 @@ SELECT * FROM ad_click_counts_minute;    -- aggregated click counts
 \q                                        -- exit
 ```
 
+## Load testing
+
+See [`load-test/README.md`](load-test/README.md) — a small stress test tool that
+spreads load across every ad in the database and verifies click-to-Postgres latency
+stays within target.
+
 ## Database
 
 Schema migrations live in `db/migrations` (Flyway), applied automatically by the
@@ -116,9 +129,12 @@ shouldn't run against a real deployment the same way migrations would.
 ## Status
 
 - **`record-click-service` and `kafka-streams-app` are fully working, verified
-  end-to-end.** A real `POST /recordClick` looks up the ad, produces a click event to
-  Kafka, gets aggregated into 1-minute windows, and lands in Postgres. See
-  [`record-click-service/README.md`](record-click-service/README.md) and
-  [`kafka-streams-app/README.md`](kafka-streams-app/README.md) for details.
+  end-to-end, including under load.** A real `POST /recordClick` looks up the ad,
+  produces a click event to Kafka, gets aggregated into 1-minute windows, and lands in
+  Postgres — with observed click-to-Postgres latency (not just config-based assumption)
+  staying well within a 5-second target under a stress test. See
+  [`record-click-service/README.md`](record-click-service/README.md),
+  [`kafka-streams-app/README.md`](kafka-streams-app/README.md), and
+  [`load-test/README.md`](load-test/README.md) for details.
 - `analytics-service`, `ad-click-simulator`, `analytics-dashboard` — scaffold only, no
   business logic yet.
