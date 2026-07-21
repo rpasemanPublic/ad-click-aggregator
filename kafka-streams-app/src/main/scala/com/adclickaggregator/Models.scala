@@ -20,7 +20,9 @@ object ClickEvent {
   implicit val clickEventSerde: Serde[ClickEvent] = JsonSerde[ClickEvent]
 }
 
-case class ClickCountAggregate(count: Long, maxTimestamp: Long)
+case class ClickEventWithOffset(event: ClickEvent, offset: Long)
+
+case class ClickCountAggregate(count: Long, maxTimestamp: Long, lastOffset: Long)
 object ClickCountAggregate {
   implicit val decoder: Decoder[ClickCountAggregate] = deriveDecoder[ClickCountAggregate]
   implicit val encoder: Encoder[ClickCountAggregate] = deriveEncoder[ClickCountAggregate]

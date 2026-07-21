@@ -6,26 +6,35 @@ import javax.sql.DataSource
 import scala.util.Using
 
 trait ClickCountWriter {
-  def write(adId: String, windowStart: Long, count: Long, maxTimestamp: Long): Unit
+  def write(adId: String, windowStart: Long, count: Long, maxTimestamp: Long, lastOffset: Long): Unit
 }
 
 class PostgresClickCountWriter(dataSource: DataSource) extends ClickCountWriter {
   private val logger = LoggerFactory.getLogger(getClass)
 
-  override def write(adId: String, windowStart: Long, count: Long, maxTimestamp: Long): Unit =
+  override def write(
+      adId: String,
+      windowStart: Long,
+      count: Long,
+      maxTimestamp: Long,
+      lastOffset: Long,
+  ): Unit =
     Using
       .Manager { use =>
         val connection = use(dataSource.getConnection())
         val stmt = use(
           connection.prepareStatement(
-            """INSERT INTO ad_click_counts_minute (ad_id, window_start, click_count)
-            |VALUES (?, ?, ?)
-            |ON CONFLICT (ad_id, window_start) DO UPDATE SET click_count = EXCLUDED.click_count""".stripMargin,
+            """INSERT INTO ad_click_counts_minute (ad_id, window_start, click_count, last_offset)
+            |VALUES (?, ?, ?, ?)
+            |ON CONFLICT (ad_id, window_start) DO UPDATE
+            |  SET click_count = EXCLUDED.click_count, last_offset = EXCLUDED.last_offset
+            |  WHERE EXCLUDED.last_offset > ad_click_counts_minute.last_offset""".stripMargin,
           ),
         )
         stmt.setString(1, adId)
         stmt.setTimestamp(2, new java.sql.Timestamp(windowStart))
         stmt.setLong(3, count)
+        stmt.setLong(4, lastOffset)
         stmt.executeUpdate()
         val staleness = System.currentTimeMillis() - maxTimestamp
         logger.info(
