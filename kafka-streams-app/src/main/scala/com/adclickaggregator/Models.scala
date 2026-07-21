@@ -6,6 +6,7 @@ import org.apache.kafka.common.serialization.Serde
 
 case class ClickEvent(
     adId: String,
+    requestId: String,
     timestamp: Long,
     userId: Option[String],
     sessionId: String,

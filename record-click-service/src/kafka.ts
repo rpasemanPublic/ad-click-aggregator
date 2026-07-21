@@ -9,6 +9,7 @@ export const producer = kafka.producer();
 
 export interface ClickEvent {
   adId: string;
+  requestId: string;
   timestamp: number;
   userId: string | null;
   sessionId: string;
@@ -27,4 +28,13 @@ export async function sendClickEvent(clickEvent: ClickEvent): Promise<void> {
       },
     ],
   });
+
+  console.log(
+    JSON.stringify({
+      requestId: clickEvent.requestId,
+      adId: clickEvent.adId,
+      event: "produced",
+      timestamp: Date.now(),
+    }),
+  );
 }

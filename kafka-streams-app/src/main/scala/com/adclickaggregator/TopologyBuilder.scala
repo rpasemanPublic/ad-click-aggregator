@@ -30,6 +30,10 @@ final case class TopologyBuilder private (clickCountWriter: Option[ClickCountWri
         if (key != event.adId) {
           logger.error(s"Key/value mismatch on ad-clicks: key=$key, event.adId=${event.adId}")
         }
+        logger.info(
+          s"""{"requestId":"${event.requestId}","adId":"${event.adId}","event":"consumed","timestamp":${System
+              .currentTimeMillis()}}""",
+        )
       }
       .filter { (key, event) => key == event.adId }
 

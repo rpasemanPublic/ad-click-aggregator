@@ -40,6 +40,7 @@ app.post(
 
     const clickEvent: ClickEvent = {
       adId,
+      requestId: randomUUID(),
       timestamp: Date.now(),
       userId: null,
       sessionId,
