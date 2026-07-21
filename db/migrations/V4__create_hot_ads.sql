@@ -1,0 +1,3 @@
+CREATE TABLE hot_ads (
+  ad_id TEXT NOT NULL PRIMARY KEY REFERENCES ads (ad_id)
+);

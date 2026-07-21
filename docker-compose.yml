@@ -18,6 +18,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: postgres
+    command: ["postgres", "-c", "wal_level=logical"]
     ports:
       - "5432:5432"
     environment:
@@ -46,6 +47,51 @@ services:
       - ./db/seed.sql:/seed.sql
     depends_on:
       flyway:
+        condition: service_completed_successfully
+
+  kafka-connect:
+    image: debezium/connect:3.0.0.Final
+    container_name: kafka-connect
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_started
+
+  register-hot-ads-connector:
+    image: curlimages/curl:8.11.0
+    container_name: register-hot-ads-connector
+    volumes:
+      - ./debezium/hot-ads-connector.json:/hot-ads-connector.json
+    command:
+      - --retry
+      - "20"
+      - --retry-connrefused
+      - --retry-delay
+      - "3"
+      - --fail
+      - -X
+      - PUT
+      - -H
+      - "Content-Type: application/json"
+      - -d
+      - "@/hot-ads-connector.json"
+      - http://kafka-connect:8083/connectors/hot-ads-connector/config
+    depends_on:
+      kafka-connect:
+        condition: service_started
+      seed:
         condition: service_completed_successfully
 
   record-click-service:

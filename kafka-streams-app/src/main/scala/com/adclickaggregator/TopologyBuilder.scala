@@ -2,25 +2,42 @@ package com.adclickaggregator
 
 import org.apache.kafka.common.serialization.Serdes
 import org.apache.kafka.common.utils.Bytes
-import org.apache.kafka.streams.{StreamsBuilder, Topology}
-import org.apache.kafka.streams.kstream.{Consumed, KStream, Materialized, TimeWindows}
+import org.apache.kafka.streams.{KeyValue, StreamsBuilder, Topology}
+import org.apache.kafka.streams.kstream.{
+  Aggregator,
+  Consumed,
+  GlobalKTable,
+  Grouped,
+  Initializer,
+  KStream,
+  Materialized,
+  Named,
+  TimeWindows,
+}
 import org.apache.kafka.streams.processor.api.{
   FixedKeyProcessor,
   FixedKeyProcessorContext,
   FixedKeyProcessorSupplier,
   FixedKeyRecord,
 }
-import org.apache.kafka.streams.state.WindowStore
+import org.apache.kafka.streams.state.{KeyValueStore, WindowStore}
 import org.slf4j.LoggerFactory
 
 import java.time.Duration
 import scala.jdk.OptionConverters.RichOptional
+import scala.util.Random
 
-final case class TopologyBuilder private (clickCountWriter: Option[ClickCountWriter] = None) {
+final case class TopologyBuilder private (
+    clickCountWriter: Option[ClickCountWriter] = None,
+    hotAdShardCount: Option[Int] = None,
+) {
   private val logger = LoggerFactory.getLogger(getClass)
 
   def withClickCountWriter(writer: ClickCountWriter): TopologyBuilder =
     copy(clickCountWriter = Some(writer))
+
+  def withHotAdShardCount(n: Int): TopologyBuilder =
+    copy(hotAdShardCount = Some(n))
 
   def build(): Topology = {
     val writer =
@@ -28,7 +45,7 @@ final case class TopologyBuilder private (clickCountWriter: Option[ClickCountWri
 
     val builder = new StreamsBuilder()
 
-    val clicks = builder
+    val clicks: KStream[String, ClickEvent] = builder
       .stream(
         "ad-clicks",
         Consumed.`with`(Serdes.String(), ClickEvent.clickEventSerde),
@@ -44,6 +61,12 @@ final case class TopologyBuilder private (clickCountWriter: Option[ClickCountWri
       }
       .filter { (key, event) => key == event.adId }
 
+    val hotAds: GlobalKTable[String, String] =
+      builder.globalTable(
+        "adclickaggregator.public.hot_ads",
+        Consumed.`with`(Serdes.String(), Serdes.String()),
+      )
+
     val processor: FixedKeyProcessorSupplier[String, ClickEvent, ClickEventWithOffset] = () =>
       new FixedKeyProcessor[String, ClickEvent, ClickEventWithOffset] {
         private var context: FixedKeyProcessorContext[String, ClickEventWithOffset] = _
@@ -58,32 +81,84 @@ final case class TopologyBuilder private (clickCountWriter: Option[ClickCountWri
       }
 
     val clicksWithOffset: KStream[String, ClickEventWithOffset] = clicks.processValues(processor)
+    val clicksWithHotFlag: KStream[String, (ClickEventWithOffset, Boolean)] =
+      clicksWithOffset.leftJoin(
+        hotAds,
+        (adId: String, _: ClickEventWithOffset) => adId,
+        (event: ClickEventWithOffset, hotMarker: String) => (event, hotMarker != null),
+      )
 
-    val clickCountAggregates = clicksWithOffset.groupByKey
+    val initializer: Initializer[ClickCountAggregate] = () =>
+      ClickCountAggregate(count = 0, maxTimestamp = 0, lastOffset = -1)
+
+    val aggregator: Aggregator[String, ClickEventWithOffset, ClickCountAggregate] =
+      (_, eventWithOffset, agg) =>
+        ClickCountAggregate(
+          count = agg.count + 1,
+          maxTimestamp = math.max(agg.maxTimestamp, eventWithOffset.event.timestamp),
+          lastOffset = eventWithOffset.offset,
+        )
+
+    val materializedClickCountAggregate
+        : Materialized[String, ClickCountAggregate, WindowStore[Bytes, Array[Byte]]] =
+      Materialized.`with`[String, ClickCountAggregate, WindowStore[Bytes, Array[Byte]]](
+        Serdes.String(),
+        ClickCountAggregate.serde,
+      )
+
+    val clickCountAggregates = clicksWithHotFlag
+      .selectKey { (k, v) =>
+        v match {
+          case (_, isHot) if isHot =>
+            s"${k}#${Random.nextInt(hotAdShardCount.getOrElse(throw new IllegalStateException("hotAdShardCount must be set")))}"
+          case _ => k
+        }
+      }
+      .mapValues((_, v) => v._1)
+      .groupByKey(Grouped.`with`(Serdes.String(), ClickEventWithOffset.serde))
       .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(1)))
       .aggregate(
-        () => ClickCountAggregate(count = 0, maxTimestamp = 0, lastOffset = -1),
-        (_, eventWithOffset: ClickEventWithOffset, agg: ClickCountAggregate) =>
-          ClickCountAggregate(
-            count = agg.count + 1,
-            maxTimestamp = math.max(agg.maxTimestamp, eventWithOffset.event.timestamp),
-            lastOffset = eventWithOffset.offset,
-          ),
-        Materialized.`with`[String, ClickCountAggregate, WindowStore[Bytes, Array[Byte]]](
+        initializer,
+        aggregator,
+        Named.as("click-count-aggregate"),
+        materializedClickCountAggregate,
+      )
+
+    val mergeInitializer: Initializer[MergedClickCountAggregate] = () =>
+      MergedClickCountAggregate(shardAggregates = Map.empty)
+
+    val mergeAggregator: Aggregator[String, PartialWithShard, MergedClickCountAggregate] =
+      (_, partial, acc) =>
+        acc.copy(shardAggregates = acc.shardAggregates.updated(partial.shardKey, partial.aggregate))
+
+    val mergedCounts = clickCountAggregates
+      .toStream()
+      .map { (windowedKey, agg) =>
+        val shardKey  = windowedKey.key() // e.g. "ad-001#3" or "ad-002"
+        val plainAdId = shardKey.takeWhile(_ != '#')
+        val newKey    = s"$plainAdId|${windowedKey.window().start()}"
+        KeyValue.pair(newKey, PartialWithShard(shardKey, agg))
+      }
+      .groupByKey(Grouped.`with`(Serdes.String(), PartialWithShard.serde))
+      .aggregate(
+        mergeInitializer,
+        mergeAggregator,
+        Materialized.`with`[String, MergedClickCountAggregate, KeyValueStore[Bytes, Array[Byte]]](
           Serdes.String(),
-          ClickCountAggregate.serde,
+          MergedClickCountAggregate.serde,
         ),
       )
 
-    clickCountAggregates.toStream().foreach { (windowedKey, clickAgg) =>
-      val adId        = windowedKey.key()
-      val windowStart = windowedKey.window().start() // epoch millis
+    mergedCounts.toStream().foreach { (compositeKey, merged) =>
+      val Array(adId, windowStartStr) = compositeKey.split("\\|", 2)
+      val windowStart                 = windowStartStr.toLong
+      val shardValues                 = merged.shardAggregates.values
       writer.write(
         adId = adId,
         windowStart = windowStart,
-        count = clickAgg.count,
-        maxTimestamp = clickAgg.maxTimestamp,
-        lastOffset = clickAgg.lastOffset,
+        count = shardValues.map(_.count).sum,
+        maxTimestamp = shardValues.map(_.maxTimestamp).max,
+        shardOffsets = merged.shardAggregates.view.mapValues(_.lastOffset).toMap,
       )
     }
 

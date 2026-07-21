@@ -46,6 +46,30 @@ Staleness (click timestamp → written to Postgres) stayed in single/low-double-
 milliseconds for most flushes, with one outlier around 1.6s — comfortably under the 5s
 target from the hellointerview follow-up question this is based on.
 
+## `hot-key-test.ts`
+
+A second, deliberately *un*-even load test, built to reproduce and then verify the fix
+for the hot-partition problem (see
+[`kafka-streams-app/README.md`](../kafka-streams-app/README.md#hot-key-salting)). Unlike
+`stress-test.ts`, which spreads load evenly, this hammers one ad (whichever `SELECT ad_id
+FROM ads` returns first — `ad-001` in seeded data) at roughly 20:1 against every other ad
+combined, then reports on `ad-clicks`'s per-partition offset growth — the actual thing
+being tested, not just HTTP-level throughput.
+
+Run it the same way as `stress-test.ts` (`npm run hot-key-test`), then check partition
+distribution:
+
+```
+docker exec -it kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group ad-click-aggregator
+```
+
+Before salting, comparing partition offset growth across a single run showed one
+partition absorbing **83%** of all traffic. After (checking the *salted* internal
+repartition topic, `ad-click-aggregator-KSTREAM-AGGREGATE-STATE-STORE-...-repartition`,
+rather than raw `ad-clicks` — the raw topic stays skewed by design, since salting happens
+inside `kafka-streams-app` after consuming, not at the producer), the same test showed a
+roughly even 21-29% spread across all four partitions.
+
 ## Windows note
 
 If you hit `password authentication failed for user "postgres"` when running this (but

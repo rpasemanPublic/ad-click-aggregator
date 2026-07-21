@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "stress-test": "tsx stress-test.ts"
+    "stress-test": "tsx stress-test.ts",
+    "hot-key-test": "tsx hot-key-test.ts"
   },
   "dependencies": {
     "autocannon": "^8.0.0",

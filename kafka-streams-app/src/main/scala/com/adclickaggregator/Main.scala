@@ -13,7 +13,7 @@ object Main {
 
     val kafkaBrokerEndpoint = sys.env.getOrElse("KAFKA_BROKER", "localhost:9092")
 
-    configureTopics(kafkaBrokerEndpoint)
+    val partitionCount = configureTopicsAndGetPartitionCount(kafkaBrokerEndpoint)
 
     val streamProps = new Properties()
 
@@ -26,6 +26,7 @@ object Main {
 
     val topology = TopologyBuilder()
       .withClickCountWriter(new PostgresClickCountWriter(Database.dataSource))
+      .withHotAdShardCount(4 * partitionCount)
       .build()
     val streams = new KafkaStreams(topology, streamProps)
     streams.start()
@@ -34,7 +35,7 @@ object Main {
     }
   }
 
-  private def configureTopics(kafkaBrokerEndpoint: String): Unit = {
+  private def configureTopicsAndGetPartitionCount(kafkaBrokerEndpoint: String): Int = {
     // We first try to create the ad-clicks topic first
     val adminProps = new Properties()
     adminProps.put(
@@ -53,6 +54,15 @@ object Main {
         ()
       case Failure(e) => throw e
     }
+
+    val partitionCount = admin
+      .describeTopics(Collections.singletonList("ad-clicks"))
+      .allTopicNames()
+      .get()
+      .get("ad-clicks")
+      .partitions()
+      .size()
     admin.close()
+    partitionCount
   }
 }

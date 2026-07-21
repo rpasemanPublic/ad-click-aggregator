@@ -1,12 +1,20 @@
 package com.adclickaggregator
 
+import io.circe.syntax._
+import org.postgresql.util.PGobject
 import org.slf4j.LoggerFactory
 
 import javax.sql.DataSource
 import scala.util.Using
 
 trait ClickCountWriter {
-  def write(adId: String, windowStart: Long, count: Long, maxTimestamp: Long, lastOffset: Long): Unit
+  def write(
+      adId: String,
+      windowStart: Long,
+      count: Long,
+      maxTimestamp: Long,
+      shardOffsets: Map[String, Long],
+  ): Unit
 }
 
 class PostgresClickCountWriter(dataSource: DataSource) extends ClickCountWriter {
@@ -17,24 +25,32 @@ class PostgresClickCountWriter(dataSource: DataSource) extends ClickCountWriter 
       windowStart: Long,
       count: Long,
       maxTimestamp: Long,
-      lastOffset: Long,
+      shardOffsets: Map[String, Long],
   ): Unit =
     Using
       .Manager { use =>
         val connection = use(dataSource.getConnection())
         val stmt = use(
           connection.prepareStatement(
-            """INSERT INTO ad_click_counts_minute (ad_id, window_start, click_count, last_offset)
+            """INSERT INTO ad_click_counts_minute (ad_id, window_start, click_count, shard_offsets)
             |VALUES (?, ?, ?, ?)
             |ON CONFLICT (ad_id, window_start) DO UPDATE
-            |  SET click_count = EXCLUDED.click_count, last_offset = EXCLUDED.last_offset
-            |  WHERE EXCLUDED.last_offset > ad_click_counts_minute.last_offset""".stripMargin,
+            |  SET click_count = EXCLUDED.click_count, shard_offsets = EXCLUDED.shard_offsets
+            |  WHERE NOT EXISTS (
+            |    SELECT 1 FROM jsonb_each_text(EXCLUDED.shard_offsets) AS new(shard, offset)
+            |    WHERE COALESCE((ad_click_counts_minute.shard_offsets ->> new.shard)::bigint, -1)
+            |      > new.offset::bigint
+            |  )""".stripMargin,
           ),
         )
+        val shardOffsetsJson = new PGobject()
+        shardOffsetsJson.setType("jsonb")
+        shardOffsetsJson.setValue(shardOffsets.asJson.noSpaces)
+
         stmt.setString(1, adId)
         stmt.setTimestamp(2, new java.sql.Timestamp(windowStart))
         stmt.setLong(3, count)
-        stmt.setLong(4, lastOffset)
+        stmt.setObject(4, shardOffsetsJson)
         stmt.executeUpdate()
         val staleness = System.currentTimeMillis() - maxTimestamp
         logger.info(

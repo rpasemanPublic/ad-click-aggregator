@@ -9,3 +9,7 @@ INSERT INTO ads (ad_id, destination_url) VALUES
   ('ad-004', 'https://www.nationalgeographic.com'),
   ('ad-005', 'https://www.mozilla.org')
 ON CONFLICT (ad_id) DO NOTHING;
+
+INSERT INTO hot_ads (ad_id) VALUES
+  ('ad-001')
+ON CONFLICT (ad_id) DO NOTHING;

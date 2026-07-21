@@ -23,7 +23,8 @@ record-click-service (Node/TS)
         │
         ▼
 kafka-streams-app (Scala)
-  - windowed aggregation (per-minute click counts, per ad)
+  - conditional hot-key salting (see below) + windowed aggregation
+  - (per-minute click counts, per ad)
         │
         ▼
    Postgres (aggregated rollups)
@@ -35,6 +36,19 @@ analytics-service (Node/TS)
 analytics-dashboard (React)
 ```
 
+Hot-key salting (see [`kafka-streams-app/README.md`](kafka-streams-app/README.md#hot-key-salting))
+needs to know which ads are expected to be hot, fed in via CDC rather than a dual write:
+
+```
+Postgres: hot_ads table (allow-list)
+        │ WAL
+        ▼
+Kafka Connect + Debezium
+        │ produces to a Kafka topic
+        ▼
+kafka-streams-app: GlobalKTable, joined against every click
+```
+
 ## Services
 
 | Service                | Language     | Purpose                                                    |
@@ -44,6 +58,10 @@ analytics-dashboard (React)
 | `analytics-service`    | Node / TS    | Serves aggregated click metrics to advertisers             |
 | `ad-click-simulator`   | React / Vite | Simulates a page with clickable ads                        |
 | `analytics-dashboard`  | React / Vite | Displays click metrics over time                           |
+
+Plus infrastructure, not custom application code: Kafka, Postgres, and Kafka Connect
+running the Debezium Postgres connector (config in [`debezium/`](debezium/README.md)) —
+CDC for the `hot_ads` allow-list used by hot-key salting.
 
 ## Running locally
 
@@ -108,6 +126,7 @@ Then, at the `psql` prompt:
 ```sql
 \dt                                      -- list tables
 SELECT * FROM ads;                       -- seeded ad metadata
+SELECT * FROM hot_ads;                   -- hot-key salting allow-list
 SELECT * FROM ad_click_counts_minute;    -- aggregated click counts
 \q                                        -- exit
 ```
@@ -135,13 +154,17 @@ shouldn't run against a real deployment the same way migrations would.
   aggregated into 1-minute windows, lands in Postgres, and is queryable/chartable via
   `analytics-dashboard` — with observed click-to-Postgres latency staying well within a
   5-second target under load, cross-service request tracing (`requestId`, correlatable
-  across `record-click-service` and `kafka-streams-app` logs), and a real reproduced
+  across `record-click-service` and `kafka-streams-app` logs), a real reproduced
   "zombie consumer" scenario (`docker pause`/`unpause`) confirming `kafka-streams-app`
-  handles multi-instance rebalancing correctly. See
+  handles multi-instance rebalancing correctly, and a real reproduced hot-partition skew
+  (83% of traffic on one partition) fixed via conditional hot-key salting, verified back
+  down to a roughly even spread. See
   [`record-click-service/README.md`](record-click-service/README.md),
   [`kafka-streams-app/README.md`](kafka-streams-app/README.md) (see "Multi-instance
-  correctness" for the rebalancing work),
+  correctness" for the rebalancing work and "Hot-key salting" for the partition-skew
+  work),
   [`analytics-service/README.md`](analytics-service/README.md),
-  [`analytics-dashboard/README.md`](analytics-dashboard/README.md), and
+  [`analytics-dashboard/README.md`](analytics-dashboard/README.md),
+  [`debezium/README.md`](debezium/README.md), and
   [`load-test/README.md`](load-test/README.md) for details.
 - `ad-click-simulator` — the last unbuilt piece, still scaffold only.
