@@ -49,8 +49,16 @@ app.post(
       referrerUrl: req.headers.referer ?? null,
     };
 
-    await sendClickEvent(clickEvent);
-
+    sendClickEvent(clickEvent).catch((err) => {
+      console.error(
+        JSON.stringify({
+          requestId: clickEvent.requestId,
+          adId: clickEvent.adId,
+          event: "produce_failed",
+          error: String(err),
+        }),
+      );
+    });
     res.json({ destinationUrl });
   },
 );
