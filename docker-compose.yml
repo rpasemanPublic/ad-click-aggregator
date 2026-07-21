@@ -65,7 +65,6 @@ services:
 
   kafka-streams-app:
     build: ./kafka-streams-app
-    container_name: kafka-streams-app
     environment:
       KAFKA_BROKER: kafka:9092
       DB_URL: jdbc:postgresql://postgres:5432/ad_click_aggregator
