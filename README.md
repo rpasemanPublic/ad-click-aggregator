@@ -128,13 +128,20 @@ shouldn't run against a real deployment the same way migrations would.
 
 ## Status
 
-- **`record-click-service` and `kafka-streams-app` are fully working, verified
-  end-to-end, including under load.** A real `POST /recordClick` looks up the ad,
-  produces a click event to Kafka, gets aggregated into 1-minute windows, and lands in
-  Postgres — with observed click-to-Postgres latency (not just config-based assumption)
-  staying well within a 5-second target under a stress test. See
+- **The whole backend — `record-click-service`, `kafka-streams-app`, and
+  `analytics-service` — plus `analytics-dashboard` are fully working, verified
+  end-to-end, including under load and under real multi-instance failure scenarios.** A
+  real `POST /recordClick` looks up the ad, produces a click event to Kafka, gets
+  aggregated into 1-minute windows, lands in Postgres, and is queryable/chartable via
+  `analytics-dashboard` — with observed click-to-Postgres latency staying well within a
+  5-second target under load, cross-service request tracing (`requestId`, correlatable
+  across `record-click-service` and `kafka-streams-app` logs), and a real reproduced
+  "zombie consumer" scenario (`docker pause`/`unpause`) confirming `kafka-streams-app`
+  handles multi-instance rebalancing correctly. See
   [`record-click-service/README.md`](record-click-service/README.md),
-  [`kafka-streams-app/README.md`](kafka-streams-app/README.md), and
+  [`kafka-streams-app/README.md`](kafka-streams-app/README.md) (see "Multi-instance
+  correctness" for the rebalancing work),
+  [`analytics-service/README.md`](analytics-service/README.md),
+  [`analytics-dashboard/README.md`](analytics-dashboard/README.md), and
   [`load-test/README.md`](load-test/README.md) for details.
-- `analytics-service`, `ad-click-simulator`, `analytics-dashboard` — scaffold only, no
-  business logic yet.
+- `ad-click-simulator` — the last unbuilt piece, still scaffold only.

@@ -24,24 +24,28 @@ per-minute click counts per ad.
   "Latency" below), auto-creates the `ad-clicks` topic if it doesn't already exist,
   builds and starts the `KafkaStreams` instance, and registers a shutdown hook for a
   clean `.close()`.
-- `Models.scala` — `ClickEvent` (the raw click) and `ClickCountAggregate` (the running
-  `count` + `maxTimestamp` per window), their circe `Encoder`/`Decoder`s, and their
-  Kafka `Serde`s.
+- `Models.scala` — `ClickEvent` (the raw click), `ClickEventWithOffset` (a click paired
+  with the Kafka record offset it came from), and `ClickCountAggregate` (the running
+  `count`, `maxTimestamp`, and `lastOffset` per window), plus circe `Encoder`/`Decoder`s
+  and Kafka `Serde`s for the types that actually cross the wire (`ClickEventWithOffset`
+  doesn't — it only exists transiently between processor steps).
 - `JsonSerde.scala` — a generic `Serde[T]` builder on top of circe, reusable for any
   circe-encodable type.
 - `TopologyBuilder.scala` — builds the Kafka Streams `Topology`: reads `ad-clicks`,
   validates that the Kafka record key matches `ClickEvent.adId` (logs and drops
-  mismatches — no dead-letter topic yet), aggregates into 1-minute tumbling windows via
-  `groupByKey`/`windowedBy`/`aggregate` (tracking count *and* max click timestamp, not
-  just a count), and writes each result out via an injected `ClickCountWriter`.
-  Structured as an immutable builder (`case class` + `copy`, private constructor,
-  companion `apply()`) rather than a plain object, since more configuration is expected
-  here later.
+  mismatches — no dead-letter topic yet), tags each record with its Kafka offset via
+  `processValues` + a `FixedKeyProcessor` (needed because the plain DSL's `Aggregator`
+  lambda has no access to record metadata — see "Multi-instance correctness" below),
+  aggregates into 1-minute tumbling windows via `groupByKey`/`windowedBy`/`aggregate`,
+  and writes each result out via an injected `ClickCountWriter`. Structured as an
+  immutable builder (`case class` + `copy`, private constructor, companion `apply()`)
+  rather than a plain object, since more configuration is expected here later.
 - `ClickCountWriter.scala` — the `ClickCountWriter` trait (dependency-injected into
   `TopologyBuilder` so the topology can be unit tested later with a fake writer instead
-  of a real database) and `PostgresClickCountWriter`, which upserts into
-  `ad_click_counts_minute` using `scala.util.Using.Manager` for resource cleanup, and
-  logs observed staleness (`now - maxTimestamp`) on every successful write.
+  of a real database) and `PostgresClickCountWriter`, which conditionally upserts into
+  `ad_click_counts_minute` (see "Multi-instance correctness") using
+  `scala.util.Using.Manager` for resource cleanup, and logs observed staleness
+  (`now - maxTimestamp`) on every successful write.
 - `Database.scala` — a HikariCP connection pool singleton (`object` — Scala's built-in
   singleton, no manual pattern needed).
 
@@ -59,13 +63,48 @@ observed staleness on every write (see `load-test/README.md` for how this was ve
 under load: staleness stayed in single/low-double-digit milliseconds, with one outlier
 around 1.6s, still well under target).
 
+## Multi-instance correctness
+
+Running more than one instance of this service is expected — `container_name` was
+deliberately removed from `docker-compose.yml` so it can be scaled
+(`docker compose up --scale kafka-streams-app=N`). That raises a real correctness
+question: could two instances briefly race on the same Postgres row during a rebalance?
+
+Specifically: a "zombie" instance — one that's stalled (a GC pause, a network blip) long
+enough to be evicted from the consumer group, but is still alive and can still finish
+processing whatever it already had buffered — could write stale data to Postgres *after*
+a healthier instance has already taken over and written fresher data. Neither of Kafka's
+own protections fully cover this: consumer-group generation fencing only gates offset
+commits (not arbitrary writes), and exactly-once semantics only fence writes that go
+through Kafka's own transactional producer — Postgres is outside that boundary either
+way.
+
+The fix: `ad_click_counts_minute.last_offset` and a conditional upsert —
+`ON CONFLICT ... DO UPDATE ... WHERE EXCLUDED.last_offset > ad_click_counts_minute.last_offset`.
+Guarded by the Kafka record's own offset (canonical, broker-assigned, strictly
+increasing per partition) rather than event timestamp, since a zombie's un-flushed local
+state could technically have a *higher* timestamp than what a fresh instance rebuilds
+from the changelog.
+
+This was verified against a real reproduced zombie, not just reasoned about: `docker
+pause` (freezes every process in a container via the OS's freezer cgroup — a faithful GC
+pause simulation, unlike killing the container outright) on one instance while under
+load, confirming its partitions built real lag, then `docker unpause` — which resumed it
+mid-stream, still believing it owned what it owned before. It *did* try to keep working
+and *did* write stale data (`staleness=91573ms` in the log) before Kafka fenced it
+(`TaskMigratedException`, from `max.poll.interval.ms` being exceeded) and it rejoined the
+group cleanly. Checking the row afterward: the legitimate instance's much higher, correct
+count was what stuck — the stale write was silently rejected by the `last_offset` guard.
+
 ## Status
 
 Fully working, verified end-to-end against the whole stack (Kafka, Postgres via Flyway
-migrations, and `record-click-service` as the producer), including under load. Not yet
-built: dead-letter handling for key/value mismatches, hour/day rollups, hot-key salting,
-and `clickId`-based cross-service tracing — all deliberately deferred until actually
-needed.
+migrations, and `record-click-service` as the producer), including under load and under
+real multi-instance rebalancing/zombie scenarios. Not yet built: dead-letter handling for
+key/value mismatches, hour/day rollups, hot-key salting, and client-side `clickId`
+generation (a *different*, retry-stable ID from `requestId`, which
+`record-click-service` already generates server-side per attempt) — all deliberately
+deferred until actually needed.
 
 ## Running locally
 
@@ -88,3 +127,9 @@ they will be automatically when run via `docker compose`).
 `build.sbt` sets `Compile / run / fork := true` — without this, running via `sbt run`
 exits immediately after `main()` returns, since the Streams background threads don't
 keep sbt's own (unforked) JVM alive.
+
+To run multiple instances (e.g. to watch partition rebalancing yourself):
+
+```
+docker compose up --build -d --scale kafka-streams-app=2 kafka postgres flyway seed kafka-streams-app
+```

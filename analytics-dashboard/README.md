@@ -1,32 +1,53 @@
-# React + TypeScript + Vite
+# analytics-dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A small React dashboard for viewing click metrics: pick which ads to look at, refresh,
+see a chart.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- React / Vite / TypeScript
+- Recharts — chosen over Chart.js since our `analytics-service` response is a sparse,
+  per-ad series (not positionally aligned), which fits Recharts' handling of missing
+  data points more naturally
+- Plain `fetch` — no HTTP client library, just two simple `GET` calls
 
-## React Compiler
+## What it does
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Fetches the ad list from `GET /ads` on load, renders checkboxes for each
+- "Refresh" button (deliberate — matches `analytics-service`'s `Cache-Control: no-store`,
+  no auto-fetch-on-selection-change) queries the last hour of data via `GET /analytics`
+  for whichever ads are checked
+- `toChartData` pivots the API's per-ad-series response into the shared-array-by-bucket
+  shape Recharts' `<LineChart>` needs (any multi-series chart with a shared X-axis needs
+  this same pivot, not just Recharts)
 
-## Expanding the Oxlint configuration
+## Layout
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+- `src/App.tsx` — the whole app; small enough not to need splitting up yet
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+## Config
+
+`VITE_ANALYTICS_API_URL` (Vite requires the `VITE_` prefix for env vars exposed to
+client-side code, unlike Node's `process.env`) — falls back to `http://localhost:3002`
+if unset.
+
+## Status
+
+Fully working, verified live: selecting an ad and clicking Refresh correctly charts a
+real recorded click.
+
+## Running locally
+
+`analytics-service` needs to be running first. From the repo root:
+
+```
+docker compose up --build kafka postgres flyway seed kafka-streams-app record-click-service analytics-service
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Then, from this directory, for fast iteration with hot reload (preferred over Docker for
+day-to-day frontend work):
+
+```
+npm install
+npm run dev
+```
