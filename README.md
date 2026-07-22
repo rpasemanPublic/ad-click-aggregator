@@ -23,7 +23,7 @@ record-click-service (Node/TS)
         │
         ▼
 kafka-streams-app (Scala)
-  - conditional hot-key salting (see below) + windowed aggregation
+  - data-driven hot-key salting (see below) + windowed aggregation
   - (per-minute click counts, per ad)
         │
         ▼
@@ -157,8 +157,9 @@ shouldn't run against a real deployment the same way migrations would.
   across `record-click-service` and `kafka-streams-app` logs), a real reproduced
   "zombie consumer" scenario (`docker pause`/`unpause`) confirming `kafka-streams-app`
   handles multi-instance rebalancing correctly, and a real reproduced hot-partition skew
-  (83% of traffic on one partition) fixed via conditional hot-key salting, verified back
-  down to a roughly even spread. See
+  (83% of traffic on one partition) fixed via data-driven hot-key salting — a `.split()`
+  into a hot branch (salted, two-stage merge) and a cold branch (no repartition at all) —
+  verified back down to a roughly even spread. See
   [`record-click-service/README.md`](record-click-service/README.md),
   [`kafka-streams-app/README.md`](kafka-streams-app/README.md) (see "Multi-instance
   correctness" for the rebalancing work and "Hot-key salting" for the partition-skew

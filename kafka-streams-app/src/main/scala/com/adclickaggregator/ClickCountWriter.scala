@@ -37,9 +37,9 @@ class PostgresClickCountWriter(dataSource: DataSource) extends ClickCountWriter 
             |ON CONFLICT (ad_id, window_start) DO UPDATE
             |  SET click_count = EXCLUDED.click_count, shard_offsets = EXCLUDED.shard_offsets
             |  WHERE NOT EXISTS (
-            |    SELECT 1 FROM jsonb_each_text(EXCLUDED.shard_offsets) AS new(shard, offset)
+            |    SELECT 1 FROM jsonb_each_text(EXCLUDED.shard_offsets) AS new(shard, new_offset)
             |    WHERE COALESCE((ad_click_counts_minute.shard_offsets ->> new.shard)::bigint, -1)
-            |      > new.offset::bigint
+            |      > new.new_offset::bigint
             |  )""".stripMargin,
           ),
         )

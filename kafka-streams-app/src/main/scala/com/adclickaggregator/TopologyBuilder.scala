@@ -5,6 +5,7 @@ import org.apache.kafka.common.utils.Bytes
 import org.apache.kafka.streams.{KeyValue, StreamsBuilder, Topology}
 import org.apache.kafka.streams.kstream.{
   Aggregator,
+  Branched,
   Consumed,
   GlobalKTable,
   Grouped,
@@ -88,6 +89,11 @@ final case class TopologyBuilder private (
         (event: ClickEventWithOffset, hotMarker: String) => (event, hotMarker != null),
       )
 
+    val branchedClicksWithOffset = clicksWithHotFlag
+      .split(Named.as("hot-split-"))
+      .branch((_, c) => c._2, Branched.as("hot"))
+      .defaultBranch(Branched.as("cold"))
+
     val initializer: Initializer[ClickCountAggregate] = () =>
       ClickCountAggregate(count = 0, maxTimestamp = 0, lastOffset = -1)
 
@@ -106,23 +112,34 @@ final case class TopologyBuilder private (
         ClickCountAggregate.serde,
       )
 
-    val clickCountAggregates = clicksWithHotFlag
-      .selectKey { (k, v) =>
-        v match {
-          case (_, isHot) if isHot =>
-            s"${k}#${Random.nextInt(hotAdShardCount.getOrElse(throw new IllegalStateException("hotAdShardCount must be set")))}"
-          case _ => k
-        }
-      }
-      .mapValues((_, v) => v._1)
-      .groupByKey(Grouped.`with`(Serdes.String(), ClickEventWithOffset.serde))
-      .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(1)))
-      .aggregate(
-        initializer,
-        aggregator,
-        Named.as("click-count-aggregate"),
-        materializedClickCountAggregate,
-      )
+    val hotClickCountAggregates =
+      branchedClicksWithOffset
+        .get("hot-split-hot")
+        .mapValues((_, v) => v._1)
+        .selectKey((k, _) =>
+          s"${k}#${Random.nextInt(hotAdShardCount.getOrElse(throw new IllegalStateException("hotAdShardCount must be set")))}",
+        )
+        .groupByKey(Grouped.`with`(Serdes.String(), ClickEventWithOffset.serde))
+        .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(1)))
+        .aggregate(
+          initializer,
+          aggregator,
+          Named.as("click-count-aggregate-hot"),
+          materializedClickCountAggregate,
+        )
+
+    val coldClickCountAggregates =
+      branchedClicksWithOffset
+        .get("hot-split-cold")
+        .mapValues((_, v) => v._1)
+        .groupByKey()
+        .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(1)))
+        .aggregate(
+          initializer,
+          aggregator,
+          Named.as("click-count-aggregate-cold"),
+          materializedClickCountAggregate,
+        )
 
     val mergeInitializer: Initializer[MergedClickCountAggregate] = () =>
       MergedClickCountAggregate(shardAggregates = Map.empty)
@@ -131,7 +148,7 @@ final case class TopologyBuilder private (
       (_, partial, acc) =>
         acc.copy(shardAggregates = acc.shardAggregates.updated(partial.shardKey, partial.aggregate))
 
-    val mergedCounts = clickCountAggregates
+    val hotCounts = hotClickCountAggregates
       .toStream()
       .map { (windowedKey, agg) =>
         val shardKey  = windowedKey.key() // e.g. "ad-001#3" or "ad-002"
@@ -149,7 +166,17 @@ final case class TopologyBuilder private (
         ),
       )
 
-    mergedCounts.toStream().foreach { (compositeKey, merged) =>
+    val coldCounts: KStream[String, MergedClickCountAggregate] = coldClickCountAggregates
+      .toStream()
+      .map { (windowedKey, agg) =>
+        val adId   = windowedKey.key()
+        val newKey = s"$adId|${windowedKey.window().start()}"
+        KeyValue.pair(newKey, MergedClickCountAggregate(shardAggregates = Map(adId -> agg)))
+      }
+
+    val mergedCounts = hotCounts.toStream().merge(coldCounts)
+
+    mergedCounts.foreach { (compositeKey, merged) =>
       val Array(adId, windowStartStr) = compositeKey.split("\\|", 2)
       val windowStart                 = windowStartStr.toLong
       val shardValues                 = merged.shardAggregates.values

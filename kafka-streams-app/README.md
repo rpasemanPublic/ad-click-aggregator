@@ -43,13 +43,16 @@ per-minute click counts per ad.
   mismatches — no dead-letter topic yet), tags each record with its Kafka offset via
   `processValues` + a `FixedKeyProcessor` (needed because the plain DSL's `Aggregator`
   lambda has no access to record metadata — see "Multi-instance correctness" below),
-  looks up each click's ad against a `GlobalKTable` sourced from `hot_ads` (see
-  "Hot-key salting") and conditionally salts the key, aggregates the (possibly salted)
-  stream into 1-minute tumbling windows (stage 1), then re-keys back to the plain
-  `adId` and merges shard partials into the true total (stage 2), writing the final
-  result out via an injected `ClickCountWriter`. Structured as an immutable builder
-  (`case class` + `copy`, private constructor, companion `apply()`) rather than a plain
-  object, since more configuration is expected here later.
+  looks up each click's ad against a `GlobalKTable` sourced from `hot_ads`, then
+  `.split()`s into a hot branch and a cold branch (see "Hot-key salting" for why a
+  split is required rather than a single conditional `selectKey`). The hot branch
+  salts unconditionally and runs the full two-stage aggregate-then-merge pipeline; the
+  cold branch skips salting entirely and aggregates directly on the plain `adId`, with
+  no repartition topic at all. Both branches reshape to the same output type and
+  `.merge()` back into one stream before writing out via an injected `ClickCountWriter`.
+  Structured as an immutable builder (`case class` + `copy`, private constructor,
+  companion `apply()`) rather than a plain object, since more configuration is expected
+  here later.
 - `ClickCountWriter.scala` — the `ClickCountWriter` trait (dependency-injected into
   `TopologyBuilder` so the topology can be unit tested later with a fake writer instead
   of a real database) and `PostgresClickCountWriter`, which conditionally upserts into
@@ -128,18 +131,43 @@ Connect) rather than a dual write, so the Kafka topic can never drift from Postg
 `leftJoin`s it against every click (`leftJoin`, not `join`, since most ads aren't hot and
 an inner join would silently drop their clicks entirely).
 
-**The topology shape doesn't change per-ad** — every click flows through the same two
-stages; only the shard-selection function is conditional. Non-hot ads always resolve to
-a single fixed shard (a no-op, equivalent to no salting). Hot ads get a random shard
-suffix (`adId#0` .. `adId#(N-1)`), spreading their traffic across up to `N` different
-keys before Kafka's own hashing decides which partition each shard lands on:
+**The topology genuinely splits into two branches — a single conditional `selectKey`
+doesn't work.** The first version of this did exactly that: one `selectKey` that only
+salted hot ads, on the theory that non-hot ads would just resolve to a no-op fixed shard
+and the topology shape would otherwise stay uniform. That's wrong, and it's a real gap
+in how Kafka Streams decides to repartition: that decision is made once, at
+topology-*build* time, based on whether a key-changing operator (`selectKey`, `map`,
+etc.) appears anywhere upstream of a stateful operation — not per-record at runtime.
+Kafka Streams has no way to see that a given `selectKey` call's logic is conditional; it
+only sees "a key-changing operator exists here," and repartitions *every* record that
+flows through that point, hot or not. So the single-`selectKey` version was quietly
+sending 100% of traffic — the ~99% of non-hot clicks included — through an unnecessary
+repartition topic, which is exactly the extra hop this whole feature exists to avoid for
+the non-hot majority.
 
+The fix is a real `.split()` into two branches with genuinely different topology shapes,
+verified directly against the actual Kafka topics created (not just reasoned about): the
+cold branch's aggregate has a changelog topic (any state store needs one, for
+fault-tolerant recovery) but *no* repartition topic, confirming it costs nothing beyond
+what the pre-salting topology already cost. The hot branch:
+
+- Salts unconditionally — every record here is already known-hot, so there's no
+  conditional left to confuse the topology builder. Random shard suffix (`adId#0` ..
+  `adId#(N-1)`), spreading traffic across up to `N` different keys before Kafka's own
+  hashing decides which partition each shard lands on.
 - **Stage 1**: aggregate per salted key per window (`groupByKey`/`windowedBy`/
-  `aggregate`, same as before, just keyed by the salted key instead of the plain
-  `adId`).
+  `aggregate`, keyed by the salted key).
 - **Stage 2**: re-key back to a composite `adId|windowStart` string (carrying the shard
   key forward in the value, since it's discarded from the key) and merge all shards for
   that `(adId, window)` into the true total.
+
+The cold branch skips `selectKey` entirely and aggregates directly on the plain `adId`,
+which Kafka Streams recognizes as already correctly co-partitioned with `ad-clicks` —
+no repartition topic gets created. Its output is reshaped into the same type the hot
+branch produces (a single-entry shard map, `Map(adId -> aggregate)`) via a stateless
+`.map()` — stateless because repartitioning is only ever inserted to guarantee correct
+co-partitioning for a *stateful* operation downstream, and there isn't one here; the two
+branches `.merge()` straight into one stream feeding a single, shared writer.
 
 `N` isn't arbitrary — it needs to be large enough that random shard-to-partition hashing
 has good odds of actually covering every partition (a "balls into bins" coverage
@@ -168,10 +196,18 @@ Generalized to a per-shard offset map (`ad_click_counts_minute.shard_offsets`, `
 the write guard rejects only if the incoming write would *regress* any individual
 shard's offset relative to what's stored, rather than requiring every shard to have
 improved — which correctly lets harmless duplicate/no-op writes through while still
-catching a zombie trying to overwrite newer state with a stale snapshot.
+catching a zombie trying to overwrite newer state with a stale snapshot. (One real bug
+this SQL had along the way: `offset` is a reserved word in Postgres — used in
+`LIMIT ... OFFSET`  — so `jsonb_each_text(...) AS new(shard, offset)` was a silent
+syntax error at the unquoted column alias. Every write failed until it was renamed.)
 
-Verified against the same reproduction: with salting live, that 83%-on-one-partition
-skew became a roughly even 21-29% spread across all four partitions.
+Verified against the same reproduction, twice — once for the salting fix itself, again
+after the `.split()` restructure: with salting live, the 83%-on-one-partition skew
+became a roughly even spread across all four partitions (21-29% in the first pass,
+24-26% after the restructure), and Postgres shows the expected shape directly —
+`ad-001`'s row carries all 16 shard keys (`ad-001#0` .. `ad-001#15`) in
+`shard_offsets` with a correctly summed `click_count`, while every non-hot ad's row
+carries a single entry keyed by its own plain `adId`.
 
 ## Status
 
